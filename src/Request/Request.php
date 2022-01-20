@@ -164,6 +164,10 @@ class Request
             }
         }
 
+        if (!empty($this->parameters->getAuth('accessToken'))) {
+            $headers[] = 'Authorization: Bearer ' . $this->parameters->getAuth('accessToken');
+        }
+
         return $headers;
     }
 
@@ -175,7 +179,9 @@ class Request
      */
     protected function prepareEndpoint($url)
     {
-        if ($this->v1 === false) {
+        if (is_callable($this->parameters->getAuth('accessTokenCallback'))) {
+            $query = http_build_query($this->parameters->getGet(), null, '&');
+        } elseif ($this->v1 === false) {
             $query = http_build_query(array_merge($this->parameters->getGet(), [
                 'USER_LOGIN' => $this->parameters->getAuth('login'),
                 'USER_HASH' => $this->parameters->getAuth('apikey'),
@@ -190,6 +196,16 @@ class Request
         return sprintf('https://%s%s?%s', $this->parameters->getAuth('domain'), $url, $query);
     }
 
+    protected function prepareTokens()
+    {
+        $callback = $this->parameters->getAuth('accessTokenCallback');
+        if (is_callable($callback)) {
+            list($accessToken, $refreshToken) = call_user_func($callback);
+            $this->parameters->addAuth('accessToken', $accessToken);
+            $this->parameters->addAuth('refreshToken', $refreshToken);
+        }
+    }
+
     /**
      * Выполнить HTTP запрос и вернуть тело ответа
      *
@@ -199,8 +215,10 @@ class Request
      * @throws Exception
      * @throws NetworkException
      */
-    protected function request($url, $modified = null)
+    protected function request($url, $modified = null, $second = false)
     {
+        // токен нужно запрашивать каждый раз перед запросом
+        $this->prepareTokens();
         $headers = $this->prepareHeaders($modified);
         $endpoint = $this->prepareEndpoint($url);
 
@@ -246,6 +264,14 @@ class Request
 
         if ($result === false && !empty($error)) {
             throw new NetworkException($error, $errno);
+        }
+
+        // обновить токен для всех процессов и вызвать еще раз
+        $callback = $this->parameters->getAuth('refreshTokenCallback');
+        $token = $this->parameters->getAuth('refreshToken');
+        if (!$second && $this->lastHttpCode == 401 && is_callable($callback) && !empty($token)) {
+            call_user_func($callback, $token);
+            return $this->request($url, $modified, true);
         }
 
         return $this->parseResponse($result, $info);
